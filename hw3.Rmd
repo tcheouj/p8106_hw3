@@ -1,0 +1,347 @@
+---
+title: "hw3"
+author: "Johnstone Tcheou"
+date: "2025-03-24"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo = T, message = FALSE, results='hide', warning=FALSE}
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(mlbench)
+library(tidymodels)
+library(pROC)
+library(pdp)
+library(vip)
+library(MASS)
+library(earth)
+library(plotmo)
+```
+
+# Data import, exploration, and split
+
+Since there are no `NA` observations, we do not need `na.omit`. We do need to coerce the response variable `mpg_cat` to be a factor before visually exploring the data with `featurePlot` prior to any model fitting. Since most of the predictors are continuous, we can use density plots to best visualize their distributions stratified by levels of the response variable with y axes scaled to each predictor. 
+
+```{r data}
+set.seed(81063)
+
+auto <- 
+  read.csv("auto.csv") |> 
+  na.omit() |> 
+  mutate(
+    mpg_cat = factor(mpg_cat, levels = c("low", "high"))
+  )
+
+featurePlot(
+  x = auto[, 1:7],
+  y = auto$mpg_cat,
+  scales = list(x = list(relation = "free"), 
+                          y = list(relation = "free")),
+            plot = "density"
+  )
+```
+When stratified by `mpg_cat`, most variables have pretty different distributions, except for `acceleration`. These may indicate potential variable informativeness towards predicting `mpg_cat`. 
+
+```{r training testing split}
+set.seed(81063)
+auto_split <- initial_split(auto, prop = 0.70)
+
+training_data <- training(auto_split)
+testing_data <- testing(auto_split)
+
+training_predictors <- training_data[, -ncol(training_data)]
+training_response <- training_data$mpg_cat
+
+testing_predictors <- testing_data[, -ncol(testing_data)]
+testing_response <- testing_data$mpg_cat
+```
+
+
+# Question a
+
+##  Logistic regression
+
+We can use the `contrasts` function to ensure we are using the correct predictor labels. Afterwards, we can fit a logistic regression model to the training data and get predicted probabilities with the testing data to evaluate the model.
+
+```{r logistic fit}
+set.seed(81063)
+contrasts(auto$mpg_cat)
+
+ctrl <- trainControl(
+  method = "cv",
+  number = 10,
+  summaryFunction = twoClassSummary,
+  classProbs = TRUE
+)
+
+logit <- train(
+  x = training_data[, -ncol(training_data)],
+  y = training_response,
+  method = "glm",
+  metric = "ROC",
+  trControl = ctrl
+)
+
+summary(logit)
+
+coef(logit$finalModel)
+
+logit_pred_prob <- predict(
+  logit,
+  newdata = testing_data,
+  type = "raw"
+)
+
+(logit_confusion_matrix <- confusionMatrix(
+  data = logit_pred_prob,
+  reference = testing_data$mpg_cat,
+  positive = "high"
+))
+
+# logit <- glm(
+#   mpg_cat ~ .,
+#   data = training_data,
+#   family = binomial(link = "logit")
+# )
+# 
+# logit_pred_prob <- predict(logit, newdata = testing_data, type = "response")
+# logit_pred <- rep("low", length(logit_pred_prob))
+# logit_pred[logit_pred_prob > 0.5] <- "high"
+# 
+# 
+# confusionMatrix(data = factor(logit_pred, levels = c("low", "high")),
+#                 reference = testing_data$mpg_cat,
+#                 positive = "high")
+# 
+# roc_logit <- roc(training$mpg_cat, logit_pred_prob)
+# 
+# plot(roc_logit, legacy.axes = TRUE, print.auc = TRUE)
+# #plot(smooth(roc_logit), col = 4, add = TRUE)
+# 
+# vip(logit)
+```
+The fitted logistic regression model has 7 predictors, for `cylinders`, `displacement`, `horsepower`, `weight`, `acceleration`, `year`, and `origin`. When estimating predictions against the training dataset, we can get the confusion matrix to assess the robustness of the model's classification. 
+
+With an accuracy of `r logit_confusion_matrix$overall[1]`, it is greater than the no information rate, which means that this classifier is meaningful. Additionally, the kappa is `r logit_confusion_matrix$overall[2]`. Being greater than 0.6, it indicates good agreement. 
+
+## Are there redundant predictors in your model?
+
+```{r logit vip}
+vip(logit)
+```
+
+Variable importance is a metric assigned to each predictor, where the higher the number indicates a more important variable for predicting an outcome in a model. Variables with an importance of 0 are not actually included in the regression function and are unimportant/redundant. Based on the graph of variables and their importance, `cylinders` appears to be a redundant variable in the predictor, with an importance of 0. 
+
+```{r penalized logistic}
+set.seed(81063)
+
+glmnGrid <- expand.grid(
+  .alpha = seq(0, 1, length = 21),
+  .lambda = exp(seq(-10, -1, length = 50))
+)
+
+penalized_logit <- train(
+  x = training_data[, -ncol(training_data)],
+  y = training_response,
+  method = "glmnet",
+  tuneGrid = glmnGrid,
+  metric = "ROC",
+  trControl = ctrl
+)
+
+penalized_logit$bestTune
+
+myCol <- rainbow(25)
+myPar <- list(superpose.symbol = list(col = myCol),
+              superpose.line = list(col = myCol))
+
+plot(penalized_logit, par.settings = myPar, xTrans = function(x) log(x))
+
+coef(penalized_logit$finalModel) 
+```
+
+The logistic regression model that maximizes the AUC has a lambda of `r penalized_logit$bestTune$lambda` and an alpha of `r penalized_logit$bestTune$alpha`. 
+
+Of the `r ncol(testing_predictors)` predictors, 
+
+
+# question b
+
+## MARS model
+
+Next, we can fit a MARS model to the training data, passing the `preProcess` argument `"scale"` to scale the data. 
+
+fitting MARS model gets Warning: glm.fit: fitted probabilities numerically 0 or 1 occurred message
+
+```{r mars, warning = FALSE}
+set.seed(81063)
+
+mars <- train(
+  x = training_data[1:7],
+  y = training_data$mpg_cat,
+  method = "earth",
+  tuneGrid = expand.grid(
+    degree = 1:4,
+    nprune = 2:25
+  ),
+  preProcess = "scale",
+  metric = "ROC",
+  trControl = ctrl
+)
+
+plot(mars)
+
+coef(mars$finalModel)
+
+mars_pred <- predict(
+  mars,
+  newdata = training_data
+)
+
+(mars_confusion_matrix <- confusionMatrix(
+  data = mars_pred, 
+  reference = training_data$mpg_cat, 
+  positive = "high"
+))
+
+```
+
+## Does the MARS model improve prediction performance compared to logistic regression?
+
+Yes, it does. For one thing, the accuracy is higher - `r mars_confusion_matrix$overall[1]` compared to `r logit_confusion_matrix$overall[1]`. Secondly, the kappa is also much higher - `r mars_confusion_matrix$overall[2]` vs `r logit_confusion_matrix$overall[2]`, indicating great agreement. However, the ROC AUC is slightly lower, with the best fit MARS with the highest ROC had an ROC (`nprune` = 12, `degree` = 2) of `r max(mars$results$ROC)` compared to `r logit$results$ROC`.
+
+```{r better than logit?}
+mars 
+
+mars$bestTune
+
+max(mars$results$ROC)
+```
+# Question c
+
+## Linear discriminant analysis
+
+We can also fit the data with linear discriminant analysis. 
+
+```{r LDA}
+set.seed(81063)
+
+lda <- train(
+  x = training_predictors,
+  y = training_response,
+  method = "lda",
+  metric = "ROC",
+  trControl = ctrl
+)
+
+lda$results$ROC
+
+lda_pred <- predict(
+  lda,
+  newdata = training_data,
+  type = "raw"
+)
+
+(lda_confusion_matrix <- confusionMatrix(
+  data = lda_pred,
+  reference = training_data$mpg_cat,
+  positive = "high"
+))
+
+```
+
+Getting predictions against the training dataset again, we see that the LDA model has an accuracy of `r lda_confusion_matrix$overall[1]`. It also has a good kappa of `r lda_confusion_matrix$overall[2]`. Though a good model, it still does not have as high agreement or accuracy as MARS, and also has a lower ROC with `r lda$results$ROC`. 
+
+## Plot the linear discriminants
+
+Below are the discriminant coordinates for the LDA model. 
+
+```{r lda plot}
+plot(lda$finalModel$scaling)
+```
+
+
+# Question d
+
+## Which model will you choose to predict the response variable?
+
+To select our best model, we should **evaluate it based on CV and not on test data** - hence, a boxplot of the CV-ROC is shown below.
+
+```{r model choice}
+
+res <- resamples(list(logit = logit,
+                      mars = mars,
+                      lda = lda))
+
+summary(res)
+
+bwplot(res, metric = "ROC")
+
+median_logit_roc <- median(res$values$`logit~ROC`)
+
+median_lda_roc <- median(res$values$`lda~ROC`)
+
+median_mars_roc <- median(res$values$`mars~ROC`)
+```
+
+This illustrates that between LDA, logistic regression, and MARS, LDA has the highest median ROC with CV, with `r median_lda_roc` compared to `r median_logit_roc` for logistic regression and `r median_mars_roc` for MARS. 
+
+## Plot its ROC curve
+
+We can compare the ROC curves generated when fitting each model's predicted values against the training dataset. 
+
+```{r plot roc curves}
+logit_pred <- predict(logit, newdata = training_data, type = "prob")[,2]
+
+mars_pred <- predict(mars, newdata = training_data, type = "prob")[,2]
+
+lda_pred <- predict(lda, newdata = training_data, type = "prob")[,2]
+
+roc_logit <- roc(training_data$mpg_cat, logit_pred)
+roc_mars <- roc(training_data$mpg_cat, mars_pred)
+roc_lda <- roc(training_data$mpg_cat, lda_pred)
+
+auc <- c(roc_logit$auc[1], roc_mars$auc[1], roc_lda$auc[1])
+model_names <- c("logit", "mars", "lda")
+
+ggroc(list(roc_logit, roc_mars, roc_lda), legacy.axes = TRUE) + 
+  scale_color_discrete(labels = paste(model_names, "-", round(auc,3), sep = " ")) +
+  geom_abline(intercept = 0, slope = 1, color = "black")
+
+ggroc(roc_mars, legacy.axes = TRUE) +
+  geom_abline(intercept = 0, slope = 1, color = "black") + 
+  annotate("text", x = 0.75, y = 0.25, label = paste("MARS ROC -", round(auc[2], 3), sep = " "))
+
+ggroc(roc_mars, legacy.axes = TRUE) +
+  geom_abline(intercept = 0, slope = 1, color = "black") + 
+  annotate("text", x = 0.75, y = 0.25, label = paste("LDA ROC -", round(auc[3], 3), sep = " "))
+```
+
+The first graph shows the ROC AUC for all 3 models against the training dataset, which gives that the MARS actually has the highest training ROC. However, since we are basing our model selection on CV, LDA is still the best model for our interests. The AUC of the LDA ROC is the last graph. 
+
+## Select a probability threshold to classify observations and compute the confusion matrix.
+
+lda_pred_prob generates 274 obs for each of the 2 classes, low and high, for a total of 548 obs while the training data is only 274 obs
+
+```{r}
+lda_pred_prob <- predict(lda, newdata = training_data, type = "prob")
+lda_pred_prob <- c(lda_pred_prob$low, lda_pred_prob$high)
+
+threshold <- 0.5
+lda_pred_0.5 <- rep("low", length(lda_pred_prob))
+lda_pred_0.5[lda_pred_prob > threshold] <- "high"
+lda_pred_0.5
+
+# confusionMatrix(
+#   data = factor(lda_pred_0.5, levels = c("low", "high")), 
+#   reference = training_data$mpg_cat, 
+#   positive = "high"
+# )
+
+```
+
