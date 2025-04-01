@@ -2,14 +2,17 @@
 title: "hw3"
 author: "Johnstone Tcheou"
 date: "2025-03-24"
-output: pdf_document
+output: 
+  pdf_document:
+    toc: yes
+    toc_depth: 2
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-```{r, echo = T, message = FALSE, results='hide', warning=FALSE}
+```{r packages, echo = T, message = FALSE, results='hide', warning=FALSE}
 library(tidyverse)
 library(caret)
 library(glmnet)
@@ -21,6 +24,7 @@ library(vip)
 library(MASS)
 library(earth)
 library(plotmo)
+library(car)
 ```
 
 # Data import, exploration, and split
@@ -131,44 +135,18 @@ With an accuracy of `r logit_confusion_matrix$overall[1]`, it is greater than th
 
 ## Are there redundant predictors in your model?
 
-```{r logit vip}
-vip(logit)
-```
+Per section 3.3.3, potential problems, in the Introduction to Statistical Learning textbook, **redundancy is when there is multicollinearity between predictors, so the information that one predictor provides is redundant when the other collinear predictor already provides that information**. Multicollinearity can be visualized in a correlation plot, and it can be quantified using the variable inflation factor, which is the ratio of the variance of the predictor in the saturated model to the variance of that same predictor in a univariate model. A VIF of 5 or 10 and above indicates multicollinearity, and can be calculated with `vif()` from the `car` package. 
 
-Variable importance is a metric assigned to each predictor, where the higher the number indicates a more important variable for predicting an outcome in a model. Variables with an importance of 0 are not actually included in the regression function and are unimportant/redundant. Based on the graph of variables and their importance, `cylinders` appears to be a redundant variable in the predictor, with an importance of 0. 
-
-```{r penalized logistic}
-set.seed(81063)
-
-glmnGrid <- expand.grid(
-  .alpha = seq(0, 1, length = 21),
-  .lambda = exp(seq(-10, -1, length = 50))
+```{r logit vif}
+corrplot::corrplot(
+  cor(model.matrix(mpg_cat ~ ., training_data)[,-1]),
+  type = "full"
 )
 
-penalized_logit <- train(
-  x = training_data[, -ncol(training_data)],
-  y = training_response,
-  method = "glmnet",
-  tuneGrid = glmnGrid,
-  metric = "ROC",
-  trControl = ctrl
-)
-
-penalized_logit$bestTune
-
-myCol <- rainbow(25)
-myPar <- list(superpose.symbol = list(col = myCol),
-              superpose.line = list(col = myCol))
-
-plot(penalized_logit, par.settings = myPar, xTrans = function(x) log(x))
-
-coef(penalized_logit$finalModel) 
+vif(logit$finalModel)
 ```
 
-The logistic regression model that maximizes the AUC has a lambda of `r penalized_logit$bestTune$lambda` and an alpha of `r penalized_logit$bestTune$alpha`. 
-
-Of the `r ncol(testing_predictors)` predictors, 
-
+As illustrated in the above correlation plot, the predictors are pretty heavily correlated with each other. When looking at their VIFs, `cylinders` and `weight` have VIFs > 5 and `displacement` has a VIF > 10. These would be predictors are redundant in our final logistic regression model.
 
 # question b
 
@@ -176,7 +154,7 @@ Of the `r ncol(testing_predictors)` predictors,
 
 Next, we can fit a MARS model to the training data, passing the `preProcess` argument `"scale"` to scale the data. 
 
-fitting MARS model gets Warning: glm.fit: fitted probabilities numerically 0 or 1 occurred message
+Worth noting, **fitting MARS model gets Warning: glm.fit: fitted probabilities numerically 0 or 1 occurred**. This should be okay in our case, since our predicted outcome is binary anyways, with levels of `low` or `high`.
 
 ```{r mars, warning = FALSE}
 set.seed(81063)
@@ -187,7 +165,7 @@ mars <- train(
   method = "earth",
   tuneGrid = expand.grid(
     degree = 1:4,
-    nprune = 2:25
+    nprune = 2:20
   ),
   preProcess = "scale",
   metric = "ROC",
@@ -259,10 +237,16 @@ Getting predictions against the training dataset again, we see that the LDA mode
 
 ## Plot the linear discriminants
 
-Below are the discriminant coordinates for the LDA model. 
+Below are the discriminant coordinates for the LDA model and a histogram of the discriminant variables for each class, `mpg_cat=low` and `mpg_cat=high` in this case. 
 
 ```{r lda plot}
+
 plot(lda$finalModel$scaling)
+
+lda_for_plot <- 
+  lda(mpg_cat ~ ., training_data)
+
+plot(lda_for_plot)
 ```
 
 
@@ -289,7 +273,7 @@ median_lda_roc <- median(res$values$`lda~ROC`)
 median_mars_roc <- median(res$values$`mars~ROC`)
 ```
 
-This illustrates that between LDA, logistic regression, and MARS, LDA has the highest median ROC with CV, with `r median_lda_roc` compared to `r median_logit_roc` for logistic regression and `r median_mars_roc` for MARS. 
+This illustrates that between LDA, logistic regression, and MARS, MARS has the highest median ROC with CV, with `r median_mars_roc` compared to `r median_logit_roc` for logistic regression and `r median_lda_roc` for LDA. 
 
 ## Plot its ROC curve
 
@@ -316,32 +300,35 @@ ggroc(list(roc_logit, roc_mars, roc_lda), legacy.axes = TRUE) +
 ggroc(roc_mars, legacy.axes = TRUE) +
   geom_abline(intercept = 0, slope = 1, color = "black") + 
   annotate("text", x = 0.75, y = 0.25, label = paste("MARS ROC -", round(auc[2], 3), sep = " "))
-
-ggroc(roc_mars, legacy.axes = TRUE) +
-  geom_abline(intercept = 0, slope = 1, color = "black") + 
-  annotate("text", x = 0.75, y = 0.25, label = paste("LDA ROC -", round(auc[3], 3), sep = " "))
 ```
 
-The first graph shows the ROC AUC for all 3 models against the training dataset, which gives that the MARS actually has the highest training ROC. However, since we are basing our model selection on CV, LDA is still the best model for our interests. The AUC of the LDA ROC is the last graph. 
+The first graph shows the ROC AUC for all 3 models against the training dataset, which gives that the MARS actually has the highest training ROC, in addition to the highest CV ROC. The MARS ROC from predicting on the training dataset is also visualized. 
+
+```{r roc testing dataset}
+logit_pred_testing <- predict(logit, newdata = testing_data, type = "prob")[,2]
+
+mars_pred_testing <- predict(mars, newdata = testing_data, type = "prob")[,2]
+
+lda_pred_testing <- predict(lda, newdata = testing_data, type = "prob")[,2]
+
+roc_logit_testing <- roc(testing_data$mpg_cat, logit_pred_testing)
+roc_mars_testing <- roc(testing_data$mpg_cat, mars_pred_testing)
+roc_lda_testing <- roc(testing_data$mpg_cat, lda_pred_testing)
+
+auc_testing <- c(roc_logit_testing$auc[1], roc_mars_testing$auc[1], roc_lda_testing$auc[1])
+
+ggroc(list(roc_logit_testing, roc_mars_testing, roc_lda_testing), legacy.axes = TRUE) + 
+  scale_color_discrete(labels = paste(model_names, "-", round(auc_testing,3), sep = " ")) +
+  geom_abline(intercept = 0, slope = 1, color = "black")
+```
+When the models are fit to the testing dataset, the MARS model still has the highest ROC with `r roc_mars_testing$auc[1]`, compared to LDA and logistic regression with `r roc_lda_testing$auc[1]` and `r roc_logit_testing$auc[1]`, respectively.
 
 ## Select a probability threshold to classify observations and compute the confusion matrix.
 
 lda_pred_prob generates 274 obs for each of the 2 classes, low and high, for a total of 548 obs while the training data is only 274 obs
 
-```{r}
-lda_pred_prob <- predict(lda, newdata = training_data, type = "prob")
-lda_pred_prob <- c(lda_pred_prob$low, lda_pred_prob$high)
+```{r new probability threshold}
 
-threshold <- 0.5
-lda_pred_0.5 <- rep("low", length(lda_pred_prob))
-lda_pred_0.5[lda_pred_prob > threshold] <- "high"
-lda_pred_0.5
-
-# confusionMatrix(
-#   data = factor(lda_pred_0.5, levels = c("low", "high")), 
-#   reference = training_data$mpg_cat, 
-#   positive = "high"
-# )
 
 ```
 
