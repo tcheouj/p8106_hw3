@@ -27,6 +27,8 @@ library(plotmo)
 library(car)
 ```
 
+\newpage 
+
 # Data import, exploration, and split
 
 Since there are no `NA` observations, we do not need `na.omit`. We do need to coerce the response variable `mpg_cat` to be a factor before visually exploring the data with `featurePlot` prior to any model fitting. Since most of the predictors are continuous, we can use density plots to best visualize their distributions stratified by levels of the response variable with y axes scaled to each predictor. 
@@ -106,28 +108,6 @@ logit_pred_prob <- predict(
   reference = testing_data$mpg_cat,
   positive = "high"
 ))
-
-# logit <- glm(
-#   mpg_cat ~ .,
-#   data = training_data,
-#   family = binomial(link = "logit")
-# )
-# 
-# logit_pred_prob <- predict(logit, newdata = testing_data, type = "response")
-# logit_pred <- rep("low", length(logit_pred_prob))
-# logit_pred[logit_pred_prob > 0.5] <- "high"
-# 
-# 
-# confusionMatrix(data = factor(logit_pred, levels = c("low", "high")),
-#                 reference = testing_data$mpg_cat,
-#                 positive = "high")
-# 
-# roc_logit <- roc(training$mpg_cat, logit_pred_prob)
-# 
-# plot(roc_logit, legacy.axes = TRUE, print.auc = TRUE)
-# #plot(smooth(roc_logit), col = 4, add = TRUE)
-# 
-# vip(logit)
 ```
 The fitted logistic regression model has 7 predictors, for `cylinders`, `displacement`, `horsepower`, `weight`, `acceleration`, `year`, and `origin`. When estimating predictions against the training dataset, we can get the confusion matrix to assess the robustness of the model's classification. 
 
@@ -148,7 +128,7 @@ vif(logit$finalModel)
 
 As illustrated in the above correlation plot, the predictors are pretty heavily correlated with each other. When looking at their VIFs, `cylinders` and `weight` have VIFs > 5 and `displacement` has a VIF > 10. These would be predictors are redundant in our final logistic regression model.
 
-# question b
+# Question b
 
 ## MARS model
 
@@ -273,7 +253,7 @@ median_lda_roc <- median(res$values$`lda~ROC`)
 median_mars_roc <- median(res$values$`mars~ROC`)
 ```
 
-This illustrates that between LDA, logistic regression, and MARS, MARS has the highest median ROC with CV, with `r median_mars_roc` compared to `r median_logit_roc` for logistic regression and `r median_lda_roc` for LDA. 
+This illustrates that between LDA, logistic regression, and MARS, MARS has the highest median ROC with CV, with `r median_mars_roc` compared to `r median_logit_roc` for logistic regression and `r median_lda_roc` for LDA. However, they all have strong classification with AUCs over 0.9.
 
 ## Plot its ROC curve
 
@@ -325,10 +305,52 @@ When the models are fit to the testing dataset, the MARS model still has the hig
 
 ## Select a probability threshold to classify observations and compute the confusion matrix.
 
-lda_pred_prob generates 274 obs for each of the 2 classes, low and high, for a total of 548 obs while the training data is only 274 obs
+```{r new threshold}
+threshold <- 0.5
+new_threshold_pred <- rep("low", length(mars_pred_testing)) 
+new_threshold_pred[mars_pred_testing > threshold] <- "high"
 
-```{r new probability threshold}
+new_threshold_pred <- factor(new_threshold_pred, levels = c("low", "high"))
 
-
+(new_threshold_confusion_matrix <- confusionMatrix(
+  data = new_threshold_pred, 
+  reference = testing_data$mpg_cat,
+  positive = "high"
+))
 ```
 
+I used a general binary threshold of 0.50, since we don't really care about predicted probability and are more concerned about class labels. This results in an accuracy of `r new_threshold_confusion_matrix$overall[1]` and a Kappa of `r new_threshold_confusion_matrix$overall[2]`. With an accuracy above 0.90 and a Kappa above 0.80, we have both robust classification and pretty good agreement as well. The accuracy is higher than the no information rate, which indicates the classifier is meaningful.
+
+If we are interested, we can do a sensitivity analysis of sorts by testing different thresholds from 0 to 1 and seeing how the accuracy and Kappa values change. 
+
+```{r threshold 0.7}
+threshold <- 0.7
+new_threshold_pred <- rep("low", length(mars_pred_testing)) 
+new_threshold_pred[mars_pred_testing > threshold] <- "high"
+
+new_threshold_pred <- factor(new_threshold_pred, levels = c("low", "high"))
+
+(new_threshold_confusion_matrix <- confusionMatrix(
+  data = new_threshold_pred, 
+  reference = testing_data$mpg_cat,
+  positive = "high"
+))
+```
+
+A threshold of 0.7 performs worse, with an accuracy now of `r new_threshold_confusion_matrix$overall[1]` and a Kappa of `r new_threshold_confusion_matrix$overall[2]`.
+
+```{r threshold 0.3}
+threshold <- 0.3
+new_threshold_pred <- rep("low", length(mars_pred_testing)) 
+new_threshold_pred[mars_pred_testing > threshold] <- "high"
+
+new_threshold_pred <- factor(new_threshold_pred, levels = c("low", "high"))
+
+(new_threshold_confusion_matrix <- confusionMatrix(
+  data = new_threshold_pred, 
+  reference = testing_data$mpg_cat,
+  positive = "high"
+))
+```
+
+A threshold of 0.3 performs even worse than the threshold of 0.7. So our original threshold of 0.5 is probably ideal when predicting class labels for the testing dataset. 
